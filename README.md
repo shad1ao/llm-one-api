@@ -30,6 +30,24 @@ The server listens on `:8080` unless `listen` is set. `config.yaml` is gitignore
 go test ./...
 ```
 
+## Docker
+
+Pushes to `main` publish `ghcr.io/shad1ao/llm-one-api`. Each image is tagged `latest` and with the full commit SHA. The workflow keeps the five newest versions and deletes the older ones.
+
+The image includes `config.example.yaml` as `/config.yaml`, so provider keys can be passed in the environment:
+
+```powershell
+docker run --rm -p 8080:8080 -e OPENAI_API_KEY -e ANTHROPIC_API_KEY -e GEMINI_API_KEY ghcr.io/shad1ao/llm-one-api:latest
+```
+
+Mount a config file to replace that default:
+
+```powershell
+docker run --rm -p 8080:8080 -v ${PWD}/config.yaml:/config.yaml ghcr.io/shad1ao/llm-one-api:latest
+```
+
+GitHub creates the package as private the first time. If a pull is denied, open the package settings and set the visibility to public.
+
 ## Configuration
 
 `config.example.yaml` is a complete example. `${ENV_VAR}` is expanded in string fields.
