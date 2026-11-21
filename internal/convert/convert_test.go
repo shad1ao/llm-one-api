@@ -422,3 +422,12 @@ func TestSSEReader(t *testing.T) {
 		t.Errorf("events: %#v", got)
 	}
 }
+
+func mustMarshal(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}

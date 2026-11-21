@@ -19,6 +19,7 @@ type itemState struct {
 	custom    bool
 	summaryIx int
 	textIdx   map[int]int // message items: content_index -> ir index
+	hadText   bool        // any text was streamed (or recovered) for this item
 }
 
 type decoder struct {
@@ -126,6 +127,7 @@ func (d *decoder) Feed(sev sse.Event) ([]ir.Event, error) {
 			var e ir.Event
 			idx, e = d.block(ir.Part{Type: ir.PartText})
 			st.textIdx[ev.ContentIndex] = idx
+			st.hadText = true
 			out = append(out, e)
 		}
 		out = append(out, ir.Event{Type: ir.EventDelta, Index: idx, Delta: ir.DeltaText, Text: ev.Delta})
@@ -238,7 +240,7 @@ func (d *decoder) finishItem(st *itemState, it *wireItem) []ir.Event {
 		out = append(out, ir.Event{Type: ir.EventBlockStop, Index: st.irIdx})
 	case "message":
 		// Recover text that only appeared in the final item.
-		if len(st.textIdx) == 0 && len(it.Content) > 0 {
+		if !st.hadText && len(it.Content) > 0 {
 			var cs []wireContent
 			_ = json.Unmarshal(it.Content, &cs)
 			for _, c := range cs {
@@ -246,14 +248,14 @@ func (d *decoder) finishItem(st *itemState, it *wireItem) []ir.Event {
 				if c.Type == "refusal" {
 					t = c.Refusal
 				}
-				if t == "" || st.irIdx == -2 {
+				if t == "" {
 					continue
 				}
 				idx, e := d.block(ir.Part{Type: ir.PartText})
 				out = append(out, e, ir.Event{Type: ir.EventDelta, Index: idx, Delta: ir.DeltaText, Text: t},
 					ir.Event{Type: ir.EventBlockStop, Index: idx})
 			}
-			st.irIdx = -2 // mark recovered so duplicates are not emitted
+			st.hadText = true
 		}
 		for ci, idx := range st.textIdx {
 			out = append(out, ir.Event{Type: ir.EventBlockStop, Index: idx})

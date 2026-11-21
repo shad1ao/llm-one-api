@@ -57,7 +57,7 @@ func upstreamHeaders(r *http.Request, up Upstream, stream bool) http.Header {
 		h.Set("Accept", "application/json")
 	}
 	key := up.APIKey
-	if key == "" {
+	if key == "" && !up.NoClientKey {
 		key = clientKey(r)
 	}
 	if key != "" {

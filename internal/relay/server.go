@@ -47,6 +47,8 @@ func (s *Server) Handler() http.Handler {
 	for _, p := range []string{"/v1/messages", "/messages"} {
 		mux.HandleFunc("POST "+p, s.handle(ir.FormatClaude))
 	}
+	mux.HandleFunc("GET /v1/models", s.handleModels)
+	mux.HandleFunc("GET /models", s.handleModels)
 	mux.HandleFunc("POST /v1beta/models/{name}", s.handleGemini)
 	mux.HandleFunc("POST /v1/models/{name}", s.handleGemini)
 	return mux
@@ -86,8 +88,8 @@ type inbound struct {
 func (s *Server) serve(w http.ResponseWriter, r *http.Request, in inbound) {
 	start := time.Now()
 	status := http.StatusOK
-	model := ""
 	upName := ""
+	var model string
 	defer func() {
 		slog.Info("relay", "status", status, "model", model, "upstream", upName, "from", in.format, "path", r.URL.Path, "ms", time.Since(start).Milliseconds())
 	}()
@@ -98,6 +100,34 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, in inbound) {
 		writeErr(w, in.format, status, ir.ErrorTypeForStatus(status), err.Error())
 		return
 	}
+	if !s.cfg.authorized(clientKey(r)) {
+		status = writeErr(w, in.format, http.StatusUnauthorized, "authentication_error", "invalid or missing API key")
+		return
+	}
+
+	var stream bool
+	model, stream = peekRequest(body)
+	if in.model != "" {
+		model = in.model
+	}
+	if in.forceStream {
+		stream = true
+	}
+	if model == "" {
+		status = writeErr(w, in.format, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+	route, up, ok := s.cfg.match(model)
+	if !ok {
+		status = writeErr(w, in.format, http.StatusNotFound, "not_found_error", "no upstream for model "+model)
+		return
+	}
+	upName = up.Name
+	if up.Format == in.format {
+		status = s.passthrough(w, r, in.format, up, route, body, model, stream)
+		return
+	}
+
 	src, err := convert.Get(in.format)
 	if err != nil {
 		status = writeErr(w, in.format, http.StatusNotFound, "not_found_error", err.Error())
@@ -108,24 +138,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, in inbound) {
 		status = writeErr(w, in.format, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
-	if in.model != "" {
-		req.Model = in.model
-	}
-	if in.forceStream {
-		req.Stream = true
-	}
-	model = req.Model
-	if model == "" {
-		status = writeErr(w, in.format, http.StatusBadRequest, "invalid_request_error", "model is required")
-		return
-	}
-
-	route, up, ok := s.cfg.match(model)
-	if !ok {
-		status = writeErr(w, in.format, http.StatusNotFound, "not_found_error", "no upstream for model "+model)
-		return
-	}
-	upName = up.Name
+	req.Model, req.Stream = model, stream
 	clientModel := model
 	if route.UpstreamModel != "" {
 		req.Model = route.UpstreamModel

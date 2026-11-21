@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"os"
@@ -22,6 +23,9 @@ type Upstream struct {
 	BaseURL string
 	APIKey  string
 	Headers map[string]string
+	// NoClientKey stops the relay from forwarding the client's credential
+	// when APIKey is empty. Set when the gateway has its own api_keys.
+	NoClientKey bool
 }
 
 // Route sends models matching Model (a glob, * is the only metacharacter) to an upstream.
@@ -34,17 +38,20 @@ type Route struct {
 
 // Config is the relay configuration.
 type Config struct {
-	Listen    string
-	Loss      ir.LossPolicy
-	Timeout   time.Duration
+	Listen  string
+	Loss    ir.LossPolicy
+	Timeout time.Duration
+	// APIKeys, when non-empty, are the only client credentials accepted.
+	APIKeys   []string
 	Upstreams []Upstream
 	Routes    []Route
 }
 
 type fileConfig struct {
-	Listen    string `yaml:"listen"`
-	Loss      string `yaml:"loss"`
-	Timeout   string `yaml:"timeout"`
+	Listen    string   `yaml:"listen"`
+	Loss      string   `yaml:"loss"`
+	Timeout   string   `yaml:"timeout"`
+	APIKeys   []string `yaml:"api_keys"`
 	Upstreams []struct {
 		Name    string            `yaml:"name"`
 		Format  string            `yaml:"format"`
@@ -115,6 +122,14 @@ func ParseConfig(r io.Reader) (Config, error) {
 		}
 		cfg.Timeout = d
 	}
+	for _, k := range raw.APIKeys {
+		if k = strings.TrimSpace(expandEnv(k)); k != "" && !strings.HasPrefix(k, "${") {
+			cfg.APIKeys = append(cfg.APIKeys, k)
+		}
+	}
+	if len(raw.APIKeys) > 0 && len(cfg.APIKeys) == 0 {
+		return Config{}, fmt.Errorf("api_keys is set but every entry is empty or an unset ${VAR}")
+	}
 	if len(raw.Upstreams) == 0 {
 		return Config{}, fmt.Errorf("at least one upstream is required")
 	}
@@ -138,11 +153,12 @@ func ParseConfig(r io.Reader) (Config, error) {
 			headers[k] = expandEnv(v)
 		}
 		cfg.Upstreams = append(cfg.Upstreams, Upstream{
-			Name:    name,
-			Format:  format,
-			BaseURL: base,
-			APIKey:  expandEnv(u.APIKey),
-			Headers: headers,
+			Name:        name,
+			Format:      format,
+			BaseURL:     base,
+			APIKey:      expandEnv(u.APIKey),
+			Headers:     headers,
+			NoClientKey: len(cfg.APIKeys) > 0,
 		})
 	}
 	for _, rt := range raw.Routes {
@@ -205,4 +221,17 @@ func matchModel(pattern, model string) bool {
 		rest = rest[i+len(p):]
 	}
 	return strings.HasSuffix(rest, parts[len(parts)-1])
+}
+
+// authorized reports whether a client credential is accepted.
+func (c Config) authorized(key string) bool {
+	if len(c.APIKeys) == 0 {
+		return true
+	}
+	for _, k := range c.APIKeys {
+		if subtle.ConstantTimeCompare([]byte(k), []byte(key)) == 1 {
+			return true
+		}
+	}
+	return false
 }

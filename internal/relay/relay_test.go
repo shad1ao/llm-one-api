@@ -275,3 +275,103 @@ func mustJSON(t *testing.T, b []byte) map[string]any {
 	}
 	return m
 }
+
+func TestPassthroughKeepsUnknownFieldsAndBytes(t *testing.T) {
+	var gotBody map[string]any
+	var gotBeta string
+	const upstreamReply = `{"id":"msg_1","type":"message","model":"claude-real","content":[{"type":"text","text":"x","citations":[{"type":"char_location"}]}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBeta = r.Header.Get("anthropic-beta")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("anthropic-ratelimit-requests-remaining", "9")
+		_, _ = io.WriteString(w, upstreamReply)
+	}))
+	defer up.Close()
+	in := `{"model":"alias","max_tokens":5,"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"web_search_20250305","name":"web_search"}],"context_management":{"edits":[]}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(in))
+	req.Header.Set("anthropic-beta", "context-management-2025-06-27")
+	New(testConfig(up.URL, ir.FormatClaude, "*", "claude-real")).Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 || rec.Body.String() != upstreamReply {
+		t.Fatalf("passthrough must relay bytes unchanged: %d %s", rec.Code, rec.Body.String())
+	}
+	if gotBody["model"] != "claude-real" || gotBody["context_management"] == nil || len(gotBody["tools"].([]any)) != 1 {
+		t.Fatalf("passthrough must keep unknown fields and hosted tools: %v", gotBody)
+	}
+	if gotBeta != "context-management-2025-06-27" || rec.Header().Get("anthropic-ratelimit-requests-remaining") != "9" {
+		t.Fatalf("headers: beta=%q rl=%q", gotBeta, rec.Header().Get("anthropic-ratelimit-requests-remaining"))
+	}
+}
+
+func TestPassthroughUpstreamErrorStatus(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(429)
+		_, _ = io.WriteString(w, `{"error":{"message":"slow down","type":"rate_limit_exceeded"}}`)
+	}))
+	defer up.Close()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[]}`))
+	New(testConfig(up.URL, ir.FormatOpenAIChat, "*", "")).Handler().ServeHTTP(rec, req)
+	if rec.Code != 429 || !strings.Contains(rec.Body.String(), "slow down") {
+		t.Fatalf("got %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGatewayAPIKeys(t *testing.T) {
+	var gotAuth string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("x-api-key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","model":"c","content":[],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer up.Close()
+	cfg, err := ParseConfig(strings.NewReader("api_keys: [sk-gw]\nupstreams:\n  - name: a\n    format: claude\n    base_url: " + up.URL + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(cfg).Handler()
+	body := `{"model":"m","messages":[{"role":"user","content":"hi"}]}`
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer wrong")
+	h.ServeHTTP(rec, req)
+	if rec.Code != 401 {
+		t.Fatalf("wrong key: %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer sk-gw")
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("good key: %d %s", rec.Code, rec.Body.String())
+	}
+	if gotAuth != "" {
+		t.Fatalf("gateway key must not be forwarded upstream, got %q", gotAuth)
+	}
+}
+
+func TestModelsEndpoint(t *testing.T) {
+	cfg, err := ParseConfig(strings.NewReader("upstreams:\n  - {name: a, format: openai_chat, base_url: http://x}\nroutes:\n  - {model: gpt-b, upstream: a}\n  - {model: gpt-a, upstream: a}\n  - {model: \"*\", upstream: a}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(cfg).Handler()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	out := mustJSON(t, rec.Body.Bytes())
+	data := out["data"].([]any)
+	if len(data) != 2 || data[0].(map[string]any)["id"] != "gpt-a" {
+		t.Fatalf("models: %s", rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	h.ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), `"has_more":false`) {
+		t.Fatalf("anthropic models: %s", rec.Body.String())
+	}
+}

@@ -3,6 +3,12 @@ listen: ":8080"
 loss: allow # allow | safe | strict
 timeout: 10m
 
+# Client keys accepted by the gateway. When set, clients must send one of them
+# (Authorization: Bearer, x-api-key, x-goog-api-key, or ?key=) and their key is
+# never forwarded upstream. Leave empty to forward the client's key instead.
+api_keys:
+  - ${GATEWAY_API_KEY}
+
 upstreams:
   - name: openai
     format: openai_chat # openai_chat | openai_responses | claude | gemini

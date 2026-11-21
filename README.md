@@ -11,7 +11,9 @@ Supported formats:
 | Claude Messages | `claude` | `POST /v1/messages`, `POST /messages` |
 | Gemini generateContent | `gemini` | `POST /v1beta/models/{model}:generateContent`, `POST /v1beta/models/{model}:streamGenerateContent`, and the same paths under `/v1/models/` |
 
-`GET /healthz` returns `ok`.
+`GET /healthz` returns `ok`. `GET /v1/models` lists the route names that contain no `*` (Anthropic list format when the client sends `anthropic-version`).
+
+When the client and upstream speak the same format, the request is passed through untouched except for `model`, and the upstream response bytes and rate-limit headers are relayed as-is. Conversion only happens across formats.
 
 Streaming is forwarded event by event. If the client asked for a stream and the upstream returned one JSON body, the relay turns that body into server-sent events. The response uses the model name the client sent. `upstream_model` is only what the provider sees.
 
@@ -37,7 +39,7 @@ Pushes to `main` publish `ghcr.io/shad1ao/llm-one-api`. Each image is tagged `la
 The image includes `config.example.yaml` as `/config.yaml`, so provider keys can be passed in the environment:
 
 ```powershell
-docker run --rm -p 8080:8080 -e OPENAI_API_KEY -e ANTHROPIC_API_KEY -e GEMINI_API_KEY ghcr.io/shad1ao/llm-one-api:latest
+docker run --rm -p 8080:8080 -e GATEWAY_API_KEY -e OPENAI_API_KEY -e ANTHROPIC_API_KEY -e GEMINI_API_KEY ghcr.io/shad1ao/llm-one-api:latest
 ```
 
 Mount a config file to replace that default:
@@ -85,9 +87,11 @@ Routes are first match wins. `*` is the only glob metacharacter, so `claude-*` a
 
 ## Credentials
 
+`api_keys` lists the keys clients must present to the gateway. With `api_keys` set, a request without a matching key gets 401 and the client key is never sent upstream, so every upstream needs its own `api_key`.
+
 An upstream `api_key` is sent as `Authorization: Bearer` for OpenAI, `x-api-key` for Claude, and `x-goog-api-key` for Gemini. Claude requests also get `anthropic-version: 2023-06-01` when the client did not send one. Extra provider headers can be set on the upstream with `headers`.
 
-If `api_key` is empty, the relay reuses the client credential from `Authorization: Bearer`, `x-api-key`, `x-goog-api-key`, or the `key` query parameter, and translates it into the upstream's header.
+If `api_key` is empty and `api_keys` is not set, the relay reuses the client credential from `Authorization: Bearer`, `x-api-key`, `x-goog-api-key`, or the `key` query parameter, and translates it into the upstream's header.
 
 ## What is preserved
 
