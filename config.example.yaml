@@ -1,0 +1,28 @@
+# Copy to config.yaml. ${ENV_VAR} is expanded in string fields.
+listen: ":8080"
+loss: allow # allow | safe | strict
+timeout: 10m
+
+upstreams:
+  - name: openai
+    format: openai_chat # openai_chat | openai_responses | claude | gemini
+    base_url: https://api.openai.com
+    api_key: ${OPENAI_API_KEY}
+  - name: anthropic
+    format: claude
+    base_url: https://api.anthropic.com
+    api_key: ${ANTHROPIC_API_KEY}
+  - name: gemini
+    format: gemini
+    base_url: https://generativelanguage.googleapis.com
+    api_key: ${GEMINI_API_KEY}
+
+# First match wins. The client keeps the model name it sent;
+# upstream_model is what the provider sees.
+routes:
+  - model: claude-*
+    upstream: anthropic
+  - model: gemini-*
+    upstream: gemini
+  - model: "*"
+    upstream: openai
